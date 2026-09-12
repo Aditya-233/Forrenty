@@ -153,23 +153,55 @@ async fn handle_socks5_client(mut client: TcpStream, _peer: SocketAddr) -> Resul
         || first_buf.starts_with(b"POST ")
         || first_buf.starts_with(b"HEAD ");
 
-    if (is_tls || is_http) && target_port == 443 {
-        // TCP Desync: Send the first byte with Out-Of-Band URG flag via libc::send
+    if is_tls && first_buf.len() > 1 {
         let raw_fd = server.as_raw_fd();
-        let sent_oob = unsafe { libc::send(raw_fd, first_buf.as_ptr().cast(), 1, libc::MSG_OOB) };
+        // Exact -o 1 TCP OOB desync:
+        // Byte 0 is first_buf[0] (0x16), byte 1 is replaced with dummy 'a'.
+        // Sending 2 bytes with MSG_OOB causes TCP Urgent pointer to point to 'a' at seq 1.
+        let fake_two = [first_buf[0], b'a'];
+        let sent = unsafe {
+            libc::send(
+                raw_fd,
+                fake_two.as_ptr().cast(),
+                2,
+                libc::MSG_OOB,
+            )
+        };
 
-        if sent_oob > 0 {
-            // Send the rest of the ClientHello normally
-            if first_buf.len() > 1 {
-                server.write_all(&first_buf[1..]).await?;
-                server.flush().await?;
-            }
-        } else {
-            // Fallback: Segment split (first byte in separate TCP packet, then remainder)
-            server.write_all(&first_buf[..1]).await?;
-            server.flush().await?;
+        if sent > 0 {
             tokio::time::sleep(Duration::from_millis(10)).await;
             server.write_all(&first_buf[1..]).await?;
+            server.flush().await?;
+        } else {
+            server.write_all(&first_buf).await?;
+            server.flush().await?;
+        }
+    } else if is_http && first_buf.len() > 1 {
+        let raw_fd = server.as_raw_fd();
+        let host_pos = first_buf
+            .windows(6)
+            .position(|w| w.eq_ignore_ascii_case(b"\nhost:") || w.eq_ignore_ascii_case(b"\rhost:"))
+            .map(|p| p + 6)
+            .unwrap_or(1);
+
+        let pos = host_pos.min(first_buf.len() - 1);
+        let mut fake_buf = first_buf[..=pos].to_vec();
+        fake_buf[pos] = b'a';
+        let sent = unsafe {
+            libc::send(
+                raw_fd,
+                fake_buf.as_ptr().cast(),
+                fake_buf.len(),
+                libc::MSG_OOB,
+            )
+        };
+
+        if sent > 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            server.write_all(&first_buf[pos..]).await?;
+            server.flush().await?;
+        } else {
+            server.write_all(&first_buf).await?;
             server.flush().await?;
         }
     } else {

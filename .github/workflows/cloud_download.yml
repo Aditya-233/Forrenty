@@ -52,21 +52,11 @@ jobs:
             /usr/local/bin/cloudflared
           key: cloud-tools-musl-v2
 
-      - name: Restore DHT Routing Table
-        uses: actions/cache/restore@v4
-        with:
-          path: /home/runner/.cache/aria2
-          key: dht-cache-${{ github.run_id }}
-          restore-keys: |
-            dht-cache-
-
       - name: Extreme Accelerated Torrent Download & Stream
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DL_DIR: ${{ github.workspace }}/dl
         run: |
-          # Initialize DHT directory and disk workspace
-          mkdir -p /home/runner/.cache/aria2
           mkdir -p "$DL_DIR"
           cd "$DL_DIR"
           echo "Starting accelerated download for ${{ inputs.name }} on disk workspace..."
@@ -201,11 +191,9 @@ jobs:
             --bt-enable-lpd=true
             --peer-id-prefix="-qB4650-"
             --dht-entry-point=router.bittorrent.com:6881
-            --dht-file-path=/home/runner/.cache/aria2/dht.dat
-            --dht-file-path6=/home/runner/.cache/aria2/dht6.dat
             --dht-listen-port=6881-6999
             --listen-port=6881-6999
-            --summary-interval=1
+            --summary-interval=5
             --enable-peer-exchange=true
             --bt-tracker="$PUBLIC_TRACKERS"
             --bt-save-metadata=true
@@ -367,10 +355,3 @@ jobs:
             kill $UPLOAD_PID 2>/dev/null || true
           fi
           echo "Upload and stream session complete."
-
-      - name: Save DHT Routing Table
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: /home/runner/.cache/aria2
-          key: dht-cache-${{ github.run_id }}

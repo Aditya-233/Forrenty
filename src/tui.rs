@@ -1460,18 +1460,18 @@ impl DownloadSession {
 
         // Signal remote GitHub Actions runner that download has completed on local device
         // 1. Direct HTTP call to the stream tunnel endpoint /__complete__
-        if let Some(ref s_url) = download_url {
-            if let Some(base) = s_url.split(".trycloudflare.com").next() {
-                let complete_url = format!("{}.trycloudflare.com/__complete__", base);
-                let client_c = streaming_client.clone();
-                tokio::spawn(async move {
-                    let _ = client_c
-                        .get(&complete_url)
-                        .timeout(Duration::from_secs(3))
-                        .send()
-                        .await;
-                });
-            }
+        if let Some(ref s_url) = download_url
+            && let Some(base) = s_url.split(".trycloudflare.com").next()
+        {
+            let complete_url = format!("{}.trycloudflare.com/__complete__", base);
+            let client_c = streaming_client.clone();
+            tokio::spawn(async move {
+                let _ = client_c
+                    .get(&complete_url)
+                    .timeout(Duration::from_secs(3))
+                    .send()
+                    .await;
+            });
         }
 
         // 2. Backup signal via release notes
@@ -1540,11 +1540,15 @@ impl DownloadSession {
                     if self.finished_duration.is_none() {
                         self.finished_duration = Some(self.started_at.elapsed());
                     }
-                    self.status_text = format!(
-                        "seeding | up {}/s | ratio {:.2}",
-                        crate::util::format_size(up_speed),
-                        share_ratio
-                    );
+                    if up_speed > 0 {
+                        self.status_text = format!(
+                            "seeding | up {}/s | ratio {:.2}",
+                            crate::util::format_size(up_speed),
+                            share_ratio
+                        );
+                    } else {
+                        self.status_text = "completed".to_string();
+                    }
                 } else {
                     self.status_text = format!(
                         "down {}/s | {}",
@@ -1556,6 +1560,7 @@ impl DownloadSession {
             DownloadEvent::Success => {
                 self.progress = Some(1.0);
                 self.outcome = Some(DownloadOutcome::Success);
+                self.status_text = "completed".to_string();
                 if self.finished_duration.is_none() {
                     self.finished_duration = Some(self.started_at.elapsed());
                 }

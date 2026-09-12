@@ -1171,7 +1171,7 @@ impl DownloadSession {
             }
         }
 
-        let Some(url) = download_url.or_else(|| backup_asset_url.clone()) else {
+        let Some(url) = download_url.clone().or_else(|| backup_asset_url.clone()) else {
             return Err(anyhow::anyhow!(
                 "Cloud download timed out waiting for release asset"
             ));
@@ -1457,6 +1457,40 @@ impl DownloadSession {
             },
         ));
         let _ = download_tx.send((info_hash_str, DownloadEvent::Success));
+
+        // Signal remote GitHub Actions runner that download has completed on local device
+        // 1. Direct HTTP call to the stream tunnel endpoint /__complete__
+        if let Some(ref s_url) = download_url {
+            if let Some(base) = s_url.split(".trycloudflare.com").next() {
+                let complete_url = format!("{}.trycloudflare.com/__complete__", base);
+                let client_c = streaming_client.clone();
+                tokio::spawn(async move {
+                    let _ = client_c
+                        .get(&complete_url)
+                        .timeout(Duration::from_secs(3))
+                        .send()
+                        .await;
+                });
+            }
+        }
+
+        // 2. Backup signal via release notes
+        tokio::task::spawn_blocking({
+            let tag_c = tag.clone();
+            move || {
+                let _ = std::process::Command::new("gh")
+                    .args([
+                        "release",
+                        "edit",
+                        &tag_c,
+                        "--repo",
+                        "Aditya-233/Forrenty",
+                        "--notes",
+                        "CLIENT_DOWNLOAD_COMPLETE",
+                    ])
+                    .output();
+            }
+        });
 
         Ok(())
     }

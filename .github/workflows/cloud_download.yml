@@ -25,13 +25,6 @@ jobs:
     name: Fast Cloud Download
     runs-on: ubuntu-latest
     steps:
-      - name: Maximize Runner Disk Space
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-
       - name: Restore Tools Cache
         uses: actions/cache/restore@v4
         id: cache-tools
@@ -89,6 +82,30 @@ jobs:
           dl_path = os.environ.get('DL_DIR', '/tmp/dl')
 
           class RangeRequestHandler(SimpleHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path in ('/__complete__', '/complete'):
+                      with open('/tmp/client_done', 'w') as f:
+                          f.write('done')
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'text/plain')
+                      self.send_header('Content-Length', '4')
+                      self.end_headers()
+                      self.wfile.write(b'done')
+                      return
+                  return super().do_GET()
+
+              def do_POST(self):
+                  if self.path in ('/__complete__', '/complete'):
+                      with open('/tmp/client_done', 'w') as f:
+                          f.write('done')
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'text/plain')
+                      self.send_header('Content-Length', '4')
+                      self.end_headers()
+                      self.wfile.write(b'done')
+                      return
+                  self.send_error(404, 'Not Found')
+
               def send_head(self):
                   path = self.translate_path(self.path)
                   if not os.path.isfile(path):
@@ -298,13 +315,28 @@ jobs:
             NOW=$(date +%s)
             ELAPSED=$((NOW - START_HOLD))
 
-            # 1. Hard safety ceiling: 45 minutes (2700 seconds)
-            if [ "$ELAPSED" -gt 2700 ]; then
-              echo "Max stream hold time reached (45m). Completing job."
+            # 1. Immediate client completion signal via HTTP endpoint
+            if [ -f /tmp/client_done ]; then
+              echo "[✓] Client confirmed 100% download completion on local device! Gracefully terminating runner."
               break
             fi
 
-            # 2. Check if background backup upload finished
+            # 2. Check client completion signal via GitHub Release notes every 2s
+            if [ $((ELAPSED % 2)) -eq 0 ]; then
+              NOTES=$(gh release view "$TAG" --repo "$REPO" --json body -q .body 2>/dev/null || true)
+              if echo "$NOTES" | grep -q "CLIENT_DOWNLOAD_COMPLETE"; then
+                echo "[✓] Client signaled completion via release notes. Gracefully terminating runner."
+                break
+              fi
+            fi
+
+            # 3. Hard safety ceiling: 30 minutes (1800 seconds)
+            if [ "$ELAPSED" -gt 1800 ]; then
+              echo "Max stream hold time reached (30m). Completing job."
+              break
+            fi
+
+            # 4. Check if background backup upload finished
             if [ -n "$UPLOAD_PID" ]; then
               if ! kill -0 $UPLOAD_PID 2>/dev/null; then
                 UPLOAD_DONE=1
@@ -313,26 +345,26 @@ jobs:
               UPLOAD_DONE=1
             fi
 
-            # 3. Check client streaming activity via /tmp/last_transfer
+            # 5. Check client streaming activity via /tmp/last_transfer
             if [ -f /tmp/last_transfer ]; then
               LAST_ACTIVE=$(stat -c %Y /tmp/last_transfer 2>/dev/null || echo "$NOW")
               IDLE=$((NOW - LAST_ACTIVE))
-              if [ "$IDLE" -gt 2700 ] && [ "$ELAPSED" -gt 120 ] && [ "$UPLOAD_DONE" -eq 1 ]; then
+              if [ "$IDLE" -gt 45 ] && [ "$ELAPSED" -gt 20 ] && [ "$UPLOAD_DONE" -eq 1 ]; then
                 echo "Stream idle for ${IDLE}s. Completing job."
                 break
               fi
             else
-              if [ "$ELAPSED" -gt 2700 ] && [ "$UPLOAD_DONE" -eq 1 ]; then
-                echo "No stream requests received within 45m. Completing job."
+              if [ "$ELAPSED" -gt 600 ] && [ "$UPLOAD_DONE" -eq 1 ]; then
+                echo "No stream requests received within 10m. Completing job."
                 break
               fi
             fi
 
-            sleep 5
+            sleep 1
           done
 
           if [ -n "$UPLOAD_PID" ]; then
-            wait $UPLOAD_PID 2>/dev/null || true
+            kill $UPLOAD_PID 2>/dev/null || true
           fi
           echo "Upload and stream session complete."
 
